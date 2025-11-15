@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <iostream>
+#include <csignal>
 
 void Shard::open() {
     struct stat buffer;
@@ -71,7 +72,8 @@ Shard::Shard(const std::string& file){
     status = "NORMAL";
     section = {};
    
-    scroll_offset = 0; 
+    scroll_offset = 0;
+    selecting = false;
 
     if (file.empty()){
         filename = "Untitled";
@@ -82,8 +84,12 @@ Shard::Shard(const std::string& file){
     setlocale(LC_ALL, "");
     initscr();
     noecho();
-    cbreak();
+    raw();
     keypad(stdscr, true);
+    noraw();
+    cbreak();
+    
+    signal(SIGINT, SIG_IGN);
 
     if (has_colors()){
         start_color();
@@ -97,6 +103,9 @@ Shard::Shard(const std::string& file){
     
     
     select_coords.start.y = -1;
+    select_coords.start.x = -1;
+    select_coords.end.y = -1;
+    select_coords.end.x = -1;
 
     try {
         open();
@@ -126,12 +135,16 @@ void Shard::run(){
 
 void Shard::update(){
 
-    if (status.find("ERROR") != std::string::npos || status.find("SAVED") != std::string::npos) {
+    if (status.find("ERROR") != std::string::npos || status.find("SAVED") != std::string::npos || 
+        status.find("COPIED") != std::string::npos || status.find("PASTED") != std::string::npos ||
+        status.find("CLIPBOARD") != std::string::npos || status.find("SELECTION") != std::string::npos) {
 
-        if (mode == 'n' && status.find("SAVED") != std::string::npos) {
+        if (mode == 'n' && (status.find("SAVED") != std::string::npos || 
+            status.find("COPIED") != std::string::npos || status.find("PASTED") != std::string::npos)) {
              status = " NORMAL ";
              color_pair = 2;
-        } else if (mode == 'i' && status.find("SAVED") != std::string::npos) {
+        } else if (mode == 'i' && (status.find("SAVED") != std::string::npos || 
+            status.find("COPIED") != std::string::npos || status.find("PASTED") != std::string::npos)) {
              status = " INSERT ";
              color_pair = 1;
         }
@@ -173,9 +186,63 @@ void Shard::statusline(){
     refresh();
 }
 
+void Shard::start_selection() {
+    if (select_coords.start.y == -1) {
+        select_coords.start.x = static_cast<int>(x);
+        select_coords.start.y = static_cast<int>(y);
+        select_coords.end.x = static_cast<int>(x);
+        select_coords.end.y = static_cast<int>(y);
+        selecting = true;
+    }
+}
+
+void Shard::update_selection() {
+    if (selecting && select_coords.start.y != -1) {
+        select_coords.end.x = static_cast<int>(x);
+        select_coords.end.y = static_cast<int>(y);
+    }
+}
+
+void Shard::delete_selected_text() {
+    if (select_coords.start.y == -1) return;
+
+    Coords start = select_coords.start;
+    Coords end = select_coords.end;
+
+    if (start.y > end.y || (start.y == end.y && start.x > end.x)) {
+        std::swap(start, end);
+    }
+
+    size_t start_y = static_cast<size_t>(start.y);
+    size_t start_x = static_cast<size_t>(start.x);
+    size_t end_y = static_cast<size_t>(end.y);
+    size_t end_x = static_cast<size_t>(end.x);
+
+    if (start_y >= lines.size() || end_y >= lines.size()) {
+        return;
+    }
+
+    if (start_y == end_y) {
+        if (end_x > start_x) {
+            lines[start_y].erase(start_x, end_x - start_x);
+        }
+        x = start_x;
+        y = start_y;
+    } else {
+        std::string remaining = lines[start_y].substr(0, start_x) + 
+                               lines[end_y].substr(end_x);
+        
+        for (size_t i = end_y; i > start_y; --i) {
+            m_remove(static_cast<int>(i));
+        }
+        
+        lines[start_y] = remaining;
+        x = start_x;
+        y = start_y;
+    }
+}
 
 void Shard::input(int c){
-
 
     switch (c) {
         case 'q':
@@ -198,6 +265,8 @@ void Shard::input(int c){
 
         case 27: 
             mode = 'n';
+            clear_selection();
+            selecting = false;
             return; 
 
         case 15: 
@@ -241,65 +310,148 @@ void Shard::input(int c){
                 
                 case KEY_UP:
                     up();
+                    if (!selecting) clear_selection();
                     break;
                 case KEY_DOWN:
                     down();
+                    if (!selecting) clear_selection();
                     break;
                 case KEY_LEFT:
                     left();
+                    if (!selecting) clear_selection();
                     break;
                 case KEY_RIGHT:
                     right();
+                    if (!selecting) clear_selection();
+                    break;
+
+                case KEY_SR:
+                    start_selection();
+                    up();
+                    update_selection();
+                    break;
+                    
+                case KEY_SF:
+                    start_selection();
+                    down();
+                    update_selection();
+                    break;
+                    
+                case KEY_SLEFT:
+                    start_selection();
+                    left();
+                    update_selection();
+                    break;
+                    
+                case KEY_SRIGHT:
+                    start_selection();
+                    right();
+                    update_selection();
+                    break;
+
+                case 23:
+                    start_selection();
+                    up();
+                    update_selection();
+                    break;
+                    
+                case 19:
+                    start_selection();
+                    down();
+                    update_selection();
+                    break;
+                    
+                case 1:
+                    start_selection();
+                    left();
+                    update_selection();
+                    break;
+                    
+                case 4:
+                    start_selection();
+                    right();
+                    update_selection();
                     break;
 
                 case 11:
-                    if (y < lines.size()){
+                    if (select_coords.start.y != -1) {
+                        clipboard = get_selected_text();
+                        if (!clipboard.empty()) {
+                            status = " COPIED: " + std::to_string(clipboard.length()) + " chars ";
+                            color_pair = 4;
+                        } else {
+                            status = " COPY FAILED ";
+                            color_pair = 5;
+                        }
+                        clear_selection();
+                        selecting = false;
+                    } else if (y < lines.size()) {
                         clipboard = lines[y].substr(x);
-                        status = " COPIED: " + std::to_string(clipboard.length()) + " chars ";
+                        status = " COPIED LINE: " + std::to_string(clipboard.length()) + " chars ";
                         color_pair = 4;
                     }
                     break;
 
                 case 25: 
                     if (!clipboard.empty() && y < lines.size()) {
+                        if (select_coords.start.y != -1) {
+                            delete_selected_text();
+                            clear_selection();
+                            selecting = false;
+                        }
                         lines[y].insert(x, clipboard);
                         x += clipboard.length();
-                        status = " PASTED ";
+                        status = " PASTED: " + std::to_string(clipboard.length()) + " chars ";
                         color_pair = 4;
+                    } else {
+                        status = " CLIPBOARD EMPTY ";
+                        color_pair = 5;
                     }
                     break;
 
                 case 127:
                 case KEY_BACKSPACE:
-                    if (x == 0 && y > 0){
-                        if (y-1 < lines.size()) {
-                            x = lines[y-1].length();
-                            lines[y-1] += lines[y];
-                            m_remove(static_cast<int>(y));
-                            --y;
+                    if (select_coords.start.y != -1) {
+                        delete_selected_text();
+                        clear_selection();
+                        selecting = false;
+                    } else {
+                        if (x == 0 && y > 0){
+                            if (y-1 < lines.size()) {
+                                x = lines[y-1].length();
+                                lines[y-1] += lines[y];
+                                m_remove(static_cast<int>(y));
+                                --y;
+                            }
                         }
-                    }
-                    else if (x > 0 && y < lines.size()){
-                        lines[y].erase(--x, 1);
+                        else if (x > 0 && y < lines.size()){
+                            lines[y].erase(--x, 1);
+                        }
                     }
                     break;
 
                 case KEY_ENTER:
-                    case 10:
-                        if (y < lines.size()) {
-                            if (x < lines[y].length()){
-                                size_t chars_to_move = lines[y].length() - x;
-                                m_insert(lines[y].substr(x, chars_to_move), static_cast<int>(y + 1));
-                                lines[y].erase(x, chars_to_move);
-                            } else {
-                                m_insert("", static_cast<int>(y + 1));
-                            }
+                case 10:
+                    if (select_coords.start.y != -1) {
+                        delete_selected_text();
+                        clear_selection();
+                        selecting = false;
+                    }
                     
-                            x = 0;
-                           
-                            down(); 
+                    if (y < lines.size()) {
+                        if (x < lines[y].length()){
+                            size_t chars_to_move = lines[y].length() - x;
+                            m_insert(lines[y].substr(x, chars_to_move), static_cast<int>(y + 1));
+                            lines[y].erase(x, chars_to_move);
+                        } else {
+                            m_insert("", static_cast<int>(y + 1));
                         }
-                        break;
+                
+                        x = 0;
+                       
+                        down(); 
+                    }
+                    break;
 
                 case KEY_BTAB:
                 case KEY_CTAB:
@@ -339,9 +491,19 @@ void Shard::input(int c){
                 
                 default:
                     if ((c >= 32 && c <= 126) || c > 255) {
+                        if (select_coords.start.y != -1) {
+                            delete_selected_text();
+                            clear_selection();
+                            selecting = false;
+                        }
+                        
                         if (y < lines.size()) {
                             lines[y].insert(x, 1, static_cast<char>(c));
                             ++x;
+                        }
+                    } else {
+                        if (selecting) {
+                            selecting = false;
                         }
                     }
             }
@@ -360,7 +522,50 @@ void Shard::print(){
             clrtoeol();
         } else {
           
-            mvprintw(static_cast<int>(i), 0, lines[buffer_index].c_str());
+            if (select_coords.start.y != -1 && selecting) {
+                Coords start = select_coords.start;
+                Coords end = select_coords.end;
+                
+                if (start.y > end.y || (start.y == end.y && start.x > end.x)) {
+                    std::swap(start, end);
+                }
+                
+                size_t line_y = buffer_index;
+                
+                if (line_y >= static_cast<size_t>(start.y) && 
+                    line_y <= static_cast<size_t>(end.y)) {
+                    
+                    size_t sel_start = (line_y == static_cast<size_t>(start.y)) ? start.x : 0;
+                    size_t sel_end = (line_y == static_cast<size_t>(end.y)) ? end.x : lines[line_y].length();
+                    
+                    if (sel_start < lines[buffer_index].length()) {
+                        mvprintw(static_cast<int>(i), 0, "%.*s", 
+                                static_cast<int>(sel_start), 
+                                lines[buffer_index].c_str());
+                    }
+                    
+                    if (sel_end > sel_start && sel_start < lines[buffer_index].length()) {
+                        attron(A_REVERSE);
+                        size_t len = sel_end - sel_start;
+                        if (sel_start + len > lines[buffer_index].length()) {
+                            len = lines[buffer_index].length() - sel_start;
+                        }
+                        mvprintw(static_cast<int>(i), static_cast<int>(sel_start), "%.*s", 
+                                static_cast<int>(len), 
+                                lines[buffer_index].c_str() + sel_start);
+                        attroff(A_REVERSE);
+                    }
+                    
+                    if (sel_end < lines[buffer_index].length()) {
+                        mvprintw(static_cast<int>(i), static_cast<int>(sel_end), "%s", 
+                                lines[buffer_index].c_str() + sel_end);
+                    }
+                } else {
+                    mvprintw(static_cast<int>(i), 0, lines[buffer_index].c_str());
+                }
+            } else {
+                mvprintw(static_cast<int>(i), 0, lines[buffer_index].c_str());
+            }
         }
         clrtoeol();
     }
@@ -462,21 +667,34 @@ std::string Shard::get_selected_text(){
     size_t end_x = static_cast<size_t>(end.x);
     
     if (start_y >= lines.size() || end_y >= lines.size()) {
-        clear_selection();
         return "";
     }
 
     if (start_y == end_y) {
-        size_t len = end_x > start_x ? end_x - start_x : 0;
-        selected_text = lines[start_y].substr(start_x, len);
+        if (start_x < lines[start_y].length()) {
+            size_t len = end_x > start_x ? end_x - start_x : 0;
+            if (start_x + len > lines[start_y].length()) {
+                len = lines[start_y].length() - start_x;
+            }
+            selected_text = lines[start_y].substr(start_x, len);
+        }
     } else {
-        selected_text += lines[start_y].substr(start_x) + '\n';
+        if (start_x < lines[start_y].length()) {
+            selected_text += lines[start_y].substr(start_x);
+        }
+        selected_text += '\n';
         
-        for (size_t i = start_y + 1; i < end_y; ++i) {
+        for (size_t i = start_y + 1; i < end_y && i < lines.size(); ++i) {
              selected_text += lines[i] + '\n';
         }
         
-        selected_text += lines[end.y].substr(0, end_x);
+        if (end_y < lines.size() && end_x > 0) {
+            size_t len = end_x;
+            if (len > lines[end_y].length()) {
+                len = lines[end_y].length();
+            }
+            selected_text += lines[end_y].substr(0, len);
+        }
     }
     return selected_text;
 }

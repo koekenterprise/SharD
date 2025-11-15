@@ -59,6 +59,10 @@ private:
     
     std::string get_selected_text();
     void clear_selection();
+    void start_selection();
+    void update_selection();
+    void delete_selected_text();
+   	bool selecting;
 };
 
 #endif

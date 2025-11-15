@@ -70,6 +70,8 @@ Shard::Shard(const std::string& file){
     mode = 'n';
     status = "NORMAL";
     section = {};
+   
+    scroll_offset = 0; 
 
     if (file.empty()){
         filename = "Untitled";
@@ -166,7 +168,8 @@ void Shard::statusline(){
     attroff(A_BOLD);
     attroff(COLOR_PAIR(color_pair));
 
-    move(static_cast<int>(y), static_cast<int>(x));
+    
+    move(static_cast<int>(y - scroll_offset), static_cast<int>(x)); 
     refresh();
 }
 
@@ -180,7 +183,7 @@ void Shard::input(int c){
                 mode = 'q';
                 return;
             }
-         
+            
             if (mode == 'i') { 
                 break;
             }
@@ -282,20 +285,21 @@ void Shard::input(int c){
                     break;
 
                 case KEY_ENTER:
-                case 10:
-                    if (y < lines.size()) {
-                        if (x < lines[y].length()){
-                            size_t chars_to_move = lines[y].length() - x;
-                            m_insert(lines[y].substr(x, chars_to_move), static_cast<int>(y + 1));
-                            lines[y].erase(x, chars_to_move);
-                        } else {
-                            m_insert("", static_cast<int>(y + 1));
+                    case 10:
+                        if (y < lines.size()) {
+                            if (x < lines[y].length()){
+                                size_t chars_to_move = lines[y].length() - x;
+                                m_insert(lines[y].substr(x, chars_to_move), static_cast<int>(y + 1));
+                                lines[y].erase(x, chars_to_move);
+                            } else {
+                                m_insert("", static_cast<int>(y + 1));
+                            }
+                    
+                            x = 0;
+                           
+                            down(); 
                         }
-
-                        x = 0;
-                        ++y;
-                    }
-                    break;
+                        break;
 
                 case KEY_BTAB:
                 case KEY_CTAB:
@@ -346,17 +350,23 @@ void Shard::input(int c){
 }
 
 void Shard::print(){
+   
     for (size_t i {}; i < (size_t)LINES-1; ++i){
-        if (i >= lines.size()){
+        size_t buffer_index = i + scroll_offset;
+        
+        if (buffer_index >= lines.size()){
+           
             move(static_cast<int>(i), 0);
             clrtoeol();
-        } else{
-            mvprintw(static_cast<int>(i), 0, lines[i].c_str());
+        } else {
+          
+            mvprintw(static_cast<int>(i), 0, lines[buffer_index].c_str());
         }
         clrtoeol();
     }
 
-    move(static_cast<int>(y), static_cast<int>(x));
+    
+    move(static_cast<int>(y - scroll_offset), static_cast<int>(x)); 
 }
 
 void Shard::m_remove(int number){
@@ -389,38 +399,50 @@ void Shard::up(){
         --y;
     }
 
+   
+    if (y < scroll_offset) {
+      
+        --scroll_offset;
+    }
+
     if (y < lines.size() && x > lines[y].length()){
         x = lines[y].length();
     }
 
-    move (static_cast<int>(y), static_cast<int>(x));
+    
 }
 
 void Shard::right(){
 
     if (y < lines.size() && x < lines[y].length()){
         ++x;
-        move(static_cast<int>(y), static_cast<int>(x));
+      
     }
 }
 
 void Shard::left(){
     if(x > 0){
         --x;
-        move(static_cast<int>(y), static_cast<int>(x));
+   
     }
 }
 
 void Shard::down(){
+    size_t screen_height = LINES - 1;
 
     if(y < lines.size() - 1){
         ++y;
     }
 
+    if (y >= scroll_offset + screen_height) {
+       
+        ++scroll_offset;
+    }
+
     if(y < lines.size() && x > lines[y].length()){
         x = lines[y].length();
     }
-    move(static_cast<int>(y), static_cast<int>(x));
+   
 }
 
 std::string Shard::get_selected_text(){

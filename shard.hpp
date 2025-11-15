@@ -35,6 +35,7 @@ private:
     std::vector<std::string> lines;
     std::string clipboard;
     int color_pair;
+    size_t scroll_offset;
     
     Selection select_coords;
 

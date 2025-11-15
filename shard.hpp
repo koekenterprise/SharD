@@ -3,12 +3,7 @@
 
 #include <string>
 #include <vector>
-#include <sys/stat.h>
-#include <algorithm>
 #include <ncurses.h>
-#include <cstddef> 
-#include <utility>
-
 
 struct Coords {
     int x = -1;
@@ -38,6 +33,7 @@ private:
     size_t scroll_offset;
     
     Selection select_coords;
+    bool selecting;
 
     void update();
     void statusline();
@@ -62,7 +58,10 @@ private:
     void start_selection();
     void update_selection();
     void delete_selected_text();
-   	bool selecting;
+
+    void paste_at_cursor();
+    void paste_before_line();
+    void paste_after_line();
 };
 
 #endif

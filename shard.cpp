@@ -7,27 +7,142 @@
 #include <stdexcept>
 #include <iostream>
 #include <csignal>
+#include <termios.h>
+#include <unistd.h>
+
+void Shard::paste_at_cursor() {
+    if (clipboard.empty() || y >= lines.size()) {
+        status = " CLIPBOARD EMPTY ";
+        color_pair = 5;
+        return;
+    }
+
+    if (select_coords.start.y != -1) {
+        delete_selected_text();
+        clear_selection();
+        selecting = false;
+    }
+
+    size_t prev_x = x;
+    std::string current_line = clipboard;
+    std::string next_line_part = lines[y].substr(x);
+    size_t pos = 0;
+    
+    while ((pos = current_line.find('\n')) != std::string::npos) {
+        std::string part = current_line.substr(0, pos);
+        lines[y].insert(x, part);
+        x += part.length();
+
+        m_insert(lines[y].substr(x) + next_line_part, static_cast<int>(y + 1));
+        lines[y].erase(x);
+        
+        y++;
+        x = 0;
+        next_line_part = ""; 
+        current_line.erase(0, pos + 1);
+    }
+    
+    lines[y].insert(x, current_line);
+    x += current_line.length();
+
+    status = " PASTED: " + std::to_string(clipboard.length()) + " chars ";
+    color_pair = 4;
+}
+
+void Shard::paste_before_line() {
+    if (clipboard.empty() || lines.empty()) {
+        status = " CLIPBOARD EMPTY ";
+        color_pair = 5;
+        return;
+    }
+
+    clear_selection();
+    selecting = false;
+    
+    size_t paste_row = y;
+    
+    if (paste_row == 0 && lines[0].empty()) {
+        paste_at_cursor();
+        return;
+    }
+
+    x = 0;
+    
+    std::string buffer = clipboard;
+    std::string line;
+    size_t pos = 0;
+    
+    while ((pos = buffer.find('\n')) != std::string::npos) {
+        line = buffer.substr(0, pos);
+        m_insert(line, static_cast<int>(paste_row));
+        paste_row++;
+        buffer.erase(0, pos + 1);
+    }
+    
+    if (!buffer.empty()) {
+        m_insert(buffer, static_cast<int>(paste_row));
+        paste_row++;
+    }
+
+    y = paste_row - (clipboard.find('\n') == std::string::npos ? 1 : 0);
+    x = 0; 
+
+    status = " PASTED (BEFORE): " + std::to_string(clipboard.length()) + " chars ";
+    color_pair = 4;
+}
+
+void Shard::paste_after_line() {
+    if (clipboard.empty() || lines.empty()) {
+        status = " CLIPBOARD EMPTY ";
+        color_pair = 5;
+        return;
+    }
+
+    clear_selection();
+    selecting = false;
+    
+    size_t paste_row = y + 1;
+    
+    x = 0;
+    
+    std::string buffer = clipboard;
+    std::string line;
+    size_t pos = 0;
+    
+    while ((pos = buffer.find('\n')) != std::string::npos) {
+        line = buffer.substr(0, pos);
+        m_insert(line, static_cast<int>(paste_row));
+        paste_row++;
+        buffer.erase(0, pos + 1);
+    }
+    
+    if (!buffer.empty()) {
+        m_insert(buffer, static_cast<int>(paste_row));
+        paste_row++;
+    }
+
+    y = y + 1;	
+    x = 0; 
+
+    status = " PASTED (AFTER): " + std::to_string(clipboard.length()) + " chars ";
+    color_pair = 4;
+}
 
 void Shard::open() {
     struct stat buffer;
-
     if (stat(filename.c_str(), &buffer) == 0){
-
         std::ifstream ifile(filename);
         if (ifile.is_open()){
             std::string buffer_line;
-
             bool empty_file = true;
             while(std::getline(ifile, buffer_line)){
                 m_append(buffer_line);
                 empty_file = false;
             }
-
             if (empty_file){
-                 lines.push_back("");
+                lines.push_back("");
             }
             ifile.close();
-
         } else {
             throw std::runtime_error("Could not open file. Permission denied! File: " + filename);
         }
@@ -35,7 +150,6 @@ void Shard::open() {
         std::string str {};
         m_append(str);
     }
-
     if (lines.empty()) {
         lines.push_back("");
     }
@@ -44,34 +158,26 @@ void Shard::open() {
 void Shard::save(){
     std::ofstream ofile(filename);
     if(ofile.is_open()){
-
         for (size_t i {}; i < lines.size(); ++i){
             ofile << lines[i];
-
             if (i < lines.size() - 1) {
                 ofile << '\n';
             }
         }
-
         ofile.close();
-
         status = " SAVED ";
         color_pair = 4;
-
     } else {
-
         status = " ERROR: Permission denied! File: " + filename;
         color_pair = 5;
     }
 }
 
 Shard::Shard(const std::string& file){
-
     x = y = 0;
     mode = 'n';
     status = "NORMAL";
     section = {};
-   
     scroll_offset = 0;
     selecting = false;
 
@@ -84,11 +190,19 @@ Shard::Shard(const std::string& file){
     setlocale(LC_ALL, "");
     initscr();
     noecho();
-    raw();
-    keypad(stdscr, true);
-    noraw();
+
+    struct termios old_t, new_t;
+    tcgetattr(STDIN_FILENO, &old_t);
+    new_t = old_t;
+    new_t.c_iflag &= ~(IXON | IXOFF);
+    new_t.c_lflag &= ~(ICANON | ECHO);
+    new_t.c_cc[VMIN] = 1;
+    new_t.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &new_t);
+
     cbreak();
-    
+    keypad(stdscr, true);
+    intrflush(stdscr, FALSE);
     signal(SIGINT, SIG_IGN);
 
     if (has_colors()){
@@ -100,8 +214,7 @@ Shard::Shard(const std::string& file){
         init_pair(5, COLOR_BLACK, COLOR_MAGENTA);
         init_pair(6, COLOR_BLACK, COLOR_YELLOW);
     }
-    
-    
+    			
     select_coords.start.y = -1;
     select_coords.start.x = -1;
     select_coords.end.y = -1;
@@ -134,21 +247,19 @@ void Shard::run(){
 }
 
 void Shard::update(){
-
     if (status.find("ERROR") != std::string::npos || status.find("SAVED") != std::string::npos || 
         status.find("COPIED") != std::string::npos || status.find("PASTED") != std::string::npos ||
-        status.find("CLIPBOARD") != std::string::npos || status.find("SELECTION") != std::string::npos) {
-
+        status.find("CLIPBOARD") != std::string::npos || status.find("SELECTION") != std::string::npos ||
+        status.find("CUT") != std::string::npos) {
         if (mode == 'n' && (status.find("SAVED") != std::string::npos || 
-            status.find("COPIED") != std::string::npos || status.find("PASTED") != std::string::npos)) {
-             status = " NORMAL ";
+            status.find("COPIED") != std::string::npos || status.find("PASTED") != std::string::npos || status.find("CUT") != std::string::npos)) {	
+             status = " NORMAL ";	
              color_pair = 2;
         } else if (mode == 'i' && (status.find("SAVED") != std::string::npos || 
-            status.find("COPIED") != std::string::npos || status.find("PASTED") != std::string::npos)) {
-             status = " INSERT ";
+            status.find("COPIED") != std::string::npos || status.find("PASTED") != std::string::npos || status.find("CUT") != std::string::npos)) {	
+             status = " INSERT ";	
              color_pair = 1;
         }
-
     } else {
         switch (mode){
             case 27:
@@ -164,25 +275,20 @@ void Shard::update(){
                 break;
         }
     }
-
     section = " | COLS: " + std::to_string(x) + " | ROWS: " + std::to_string(y) + " | FILE: " + filename + " | SharD ";
 }
 
 void Shard::statusline(){
     attron(COLOR_PAIR(color_pair));
     attron(A_BOLD);
-
     mvprintw(LINES - 1, 0, "%*s", COLS, "");
-
     mvprintw(LINES - 1, 0, status.c_str());
     mvprintw(LINES - 1, static_cast<int>(status.length()), " ⵙ)");
     mvprintw(LINES - 1, COLS - static_cast<int>(section.length()), section.c_str());
-
     attroff(A_BOLD);
     attroff(COLOR_PAIR(color_pair));
-
-    
-    move(static_cast<int>(y - scroll_offset), static_cast<int>(x)); 
+    		
+    move(static_cast<int>(y - scroll_offset), static_cast<int>(x));	
     refresh();
 }
 
@@ -197,22 +303,20 @@ void Shard::start_selection() {
 }
 
 void Shard::update_selection() {
-    if (selecting && select_coords.start.y != -1) {
+    if (select_coords.start.y != -1) {
         select_coords.end.x = static_cast<int>(x);
         select_coords.end.y = static_cast<int>(y);
+        selecting = true;
     }
 }
 
 void Shard::delete_selected_text() {
     if (select_coords.start.y == -1) return;
-
     Coords start = select_coords.start;
     Coords end = select_coords.end;
-
     if (start.y > end.y || (start.y == end.y && start.x > end.x)) {
         std::swap(start, end);
     }
-
     size_t start_y = static_cast<size_t>(start.y);
     size_t start_x = static_cast<size_t>(start.x);
     size_t end_y = static_cast<size_t>(end.y);
@@ -221,7 +325,7 @@ void Shard::delete_selected_text() {
     if (start_y >= lines.size() || end_y >= lines.size()) {
         return;
     }
-
+    
     if (start_y == end_y) {
         if (end_x > start_x) {
             lines[start_y].erase(start_x, end_x - start_x);
@@ -229,13 +333,13 @@ void Shard::delete_selected_text() {
         x = start_x;
         y = start_y;
     } else {
-        std::string remaining = lines[start_y].substr(0, start_x) + 
-                               lines[end_y].substr(end_x);
-        
+        std::string remaining = lines[start_y].substr(0, start_x) +
+                                lines[end_y].substr(end_x);
+        		
         for (size_t i = end_y; i > start_y; --i) {
             m_remove(static_cast<int>(i));
         }
-        
+        		
         lines[start_y] = remaining;
         x = start_x;
         y = start_y;
@@ -243,40 +347,39 @@ void Shard::delete_selected_text() {
 }
 
 void Shard::input(int c){
-
     switch (c) {
         case 'q':
             if (mode == 'n') {
                 mode = 'q';
                 return;
             }
-            
-            if (mode == 'i') { 
-                break;
+            		
+            if (mode == 'i') {	
+             	break;
             }
-            return; 
+            return;	
 
         case 'i':
-            if (mode != 'i') { 
-                mode = 'i';
-                return; 
+            if (mode != 'i') {	
+             	mode = 'i';
+             	return;	
             }
-            break; 
+         	break;	
 
-        case 27: 
-            mode = 'n';
-            clear_selection();
-            selecting = false;
-            return; 
+        case 27:	
+         	mode = 'n';
+         	clear_selection();
+         	selecting = false;
+         	return;	
 
-        case 15: 
-            if (mode == 'n'){
-                save();
-            }
-            return; 
-            
+        case 15:	
+         	if (mode == 'n'){
+             	save();
+         	}
+         	return;	
+         	 			
         default:
-            break; 
+         	break;	
     }
 
     switch (mode){
@@ -324,56 +427,86 @@ void Shard::input(int c){
                     right();
                     if (!selecting) clear_selection();
                     break;
+                
+                case 23: 
+                    if (y > 0) {
+                        if (!selecting) {
+                            start_selection();
+                            select_coords.start.x = 0;
+                            select_coords.end.x = lines[y].length();
+                        }
+                        
+                        up(); 
+                        
+                        if (y < static_cast<size_t>(select_coords.start.y)) {
+                            select_coords.start.y = static_cast<int>(y);
+                            select_coords.start.x = 0;	
+                        } else {
+                            select_coords.end.y = static_cast<int>(y);
+                            select_coords.end.x = lines[y].length();
+                        }
 
-                case KEY_SR:
-                    start_selection();
-                    up();
-                    update_selection();
+                        if (y < scroll_offset) {
+                            --scroll_offset;
+                        }
+                    }
                     break;
-                    
-                case KEY_SF:
-                    start_selection();
-                    down();
-                    update_selection();
+
+                case 19: 
+                    if (y < lines.size() - 1) {
+                        if (!selecting) {
+                            start_selection();
+                            select_coords.start.x = 0;
+                            select_coords.end.x = lines[y].length();
+                        }
+
+                        down(); 
+                        
+                        if (y > static_cast<size_t>(select_coords.start.y)){
+                            select_coords.end.y = static_cast<int>(y);
+                            select_coords.end.x = lines[y].length();
+                        } else {
+                            select_coords.start.y = static_cast<int>(y);
+                            select_coords.start.x = 0;
+                        }
+
+                        size_t screen_height = LINES - 1;
+                        if (y >= scroll_offset + screen_height) {
+                            ++scroll_offset;
+                        }
+                    }
                     break;
-                    
-                case KEY_SLEFT:
-                    start_selection();
+                
+                case 1: 
+                    if (!selecting) {
+                        start_selection();
+                    }
                     left();
                     update_selection();
                     break;
-                    
-                case KEY_SRIGHT:
-                    start_selection();
+                case 4: 
+                    if (!selecting) {
+                        start_selection();
+                    }
                     right();
                     update_selection();
                     break;
-
-                case 23:
-                    start_selection();
-                    up();
-                    update_selection();
-                    break;
-                    
-                case 19:
-                    start_selection();
-                    down();
-                    update_selection();
-                    break;
-                    
-                case 1:
-                    start_selection();
-                    left();
-                    update_selection();
-                    break;
-                    
-                case 4:
-                    start_selection();
-                    right();
-                    update_selection();
+                
+                case 17: 
+                    if (select_coords.start.y != -1) {
+                        clipboard = get_selected_text();
+                        delete_selected_text();
+                        clear_selection();
+                        selecting = false;
+                        status = " CUT: " + std::to_string(clipboard.length()) + " chars ";
+                        color_pair = 5;	
+                    } else {
+                        status = " NO SELECTION TO CUT ";
+                        color_pair = 5;
+                    }
                     break;
 
-                case 11:
+                case 11: 
                     if (select_coords.start.y != -1) {
                         clipboard = get_selected_text();
                         if (!clipboard.empty()) {
@@ -386,29 +519,24 @@ void Shard::input(int c){
                         clear_selection();
                         selecting = false;
                     } else if (y < lines.size()) {
-                        clipboard = lines[y].substr(x);
+                        clipboard = lines[y]; 
                         status = " COPIED LINE: " + std::to_string(clipboard.length()) + " chars ";
                         color_pair = 4;
                     }
                     break;
-
-                case 25: 
-                    if (!clipboard.empty() && y < lines.size()) {
-                        if (select_coords.start.y != -1) {
-                            delete_selected_text();
-                            clear_selection();
-                            selecting = false;
-                        }
-                        lines[y].insert(x, clipboard);
-                        x += clipboard.length();
-                        status = " PASTED: " + std::to_string(clipboard.length()) + " chars ";
-                        color_pair = 4;
-                    } else {
-                        status = " CLIPBOARD EMPTY ";
-                        color_pair = 5;
-                    }
+                    
+                case 22: 
+                    paste_at_cursor();
                     break;
-
+                
+                case 25: 
+                    paste_before_line();
+                    break;
+                
+                case 16: 
+                    paste_after_line();
+                    break;
+                    
                 case 127:
                 case KEY_BACKSPACE:
                     if (select_coords.start.y != -1) {
@@ -437,7 +565,7 @@ void Shard::input(int c){
                         clear_selection();
                         selecting = false;
                     }
-                    
+                                             
                     if (y < lines.size()) {
                         if (x < lines[y].length()){
                             size_t chars_to_move = lines[y].length() - x;
@@ -446,10 +574,9 @@ void Shard::input(int c){
                         } else {
                             m_insert("", static_cast<int>(y + 1));
                         }
-                
+
                         x = 0;
-                       
-                        down(); 
+                        down();	
                     }
                     break;
 
@@ -487,8 +614,7 @@ void Shard::input(int c){
                         ++x;
                     }
                     break;
-                
-                
+                                        
                 default:
                     if ((c >= 32 && c <= 126) || c > 255) {
                         if (select_coords.start.y != -1) {
@@ -496,7 +622,7 @@ void Shard::input(int c){
                             clear_selection();
                             selecting = false;
                         }
-                        
+                                                
                         if (y < lines.size()) {
                             lines[y].insert(x, 1, static_cast<char>(c));
                             ++x;
@@ -512,56 +638,54 @@ void Shard::input(int c){
 }
 
 void Shard::print(){
-   
     for (size_t i {}; i < (size_t)LINES-1; ++i){
         size_t buffer_index = i + scroll_offset;
-        
+        		
         if (buffer_index >= lines.size()){
-           
             move(static_cast<int>(i), 0);
             clrtoeol();
         } else {
-          
             if (select_coords.start.y != -1 && selecting) {
                 Coords start = select_coords.start;
                 Coords end = select_coords.end;
-                
+                			
                 if (start.y > end.y || (start.y == end.y && start.x > end.x)) {
                     std::swap(start, end);
                 }
-                
+                			
                 size_t line_y = buffer_index;
-                
+                const std::string& current_line = lines[buffer_index];
+                			
                 if (line_y >= static_cast<size_t>(start.y) && 
                     line_y <= static_cast<size_t>(end.y)) {
-                    
+
                     size_t sel_start = (line_y == static_cast<size_t>(start.y)) ? start.x : 0;
-                    size_t sel_end = (line_y == static_cast<size_t>(end.y)) ? end.x : lines[line_y].length();
-                    
-                    if (sel_start < lines[buffer_index].length()) {
+                    size_t sel_end = (line_y == static_cast<size_t>(end.y)) ? end.x : current_line.length();
+
+                    sel_end = std::min(sel_end, current_line.length());
+                    sel_start = std::min(sel_start, current_line.length());
+                    					
+                    if (sel_start > 0) {
                         mvprintw(static_cast<int>(i), 0, "%.*s", 
-                                static_cast<int>(sel_start), 
-                                lines[buffer_index].c_str());
+                                 static_cast<int>(sel_start), 
+                                 current_line.c_str());
                     }
-                    
-                    if (sel_end > sel_start && sel_start < lines[buffer_index].length()) {
+                    					
+                    if (sel_end > sel_start) {
                         attron(A_REVERSE);
                         size_t len = sel_end - sel_start;
-                        if (sel_start + len > lines[buffer_index].length()) {
-                            len = lines[buffer_index].length() - sel_start;
-                        }
                         mvprintw(static_cast<int>(i), static_cast<int>(sel_start), "%.*s", 
-                                static_cast<int>(len), 
-                                lines[buffer_index].c_str() + sel_start);
+                                 static_cast<int>(len), 
+                                 current_line.c_str() + sel_start);
                         attroff(A_REVERSE);
                     }
-                    
-                    if (sel_end < lines[buffer_index].length()) {
+                    					
+                    if (sel_end < current_line.length()) {
                         mvprintw(static_cast<int>(i), static_cast<int>(sel_end), "%s", 
-                                lines[buffer_index].c_str() + sel_end);
+                                 current_line.c_str() + sel_end);
                     }
                 } else {
-                    mvprintw(static_cast<int>(i), 0, lines[buffer_index].c_str());
+                    mvprintw(static_cast<int>(i), 0, current_line.c_str());
                 }
             } else {
                 mvprintw(static_cast<int>(i), 0, lines[buffer_index].c_str());
@@ -569,9 +693,8 @@ void Shard::print(){
         }
         clrtoeol();
     }
-
-    
-    move(static_cast<int>(y - scroll_offset), static_cast<int>(x)); 
+    	
+    move(static_cast<int>(y - scroll_offset), static_cast<int>(x));	
 }
 
 void Shard::m_remove(int number){
@@ -603,32 +726,25 @@ void Shard::up(){
     if(y > 0){
         --y;
     }
-
-   
+    	
     if (y < scroll_offset) {
-      
-        --scroll_offset;
+             --scroll_offset;
     }
 
     if (y < lines.size() && x > lines[y].length()){
         x = lines[y].length();
     }
-
-    
 }
 
 void Shard::right(){
-
     if (y < lines.size() && x < lines[y].length()){
         ++x;
-      
     }
 }
 
 void Shard::left(){
     if(x > 0){
         --x;
-   
     }
 }
 
@@ -640,23 +756,20 @@ void Shard::down(){
     }
 
     if (y >= scroll_offset + screen_height) {
-       
-        ++scroll_offset;
+               ++scroll_offset;
     }
 
     if(y < lines.size() && x > lines[y].length()){
         x = lines[y].length();
     }
-   
 }
 
 std::string Shard::get_selected_text(){
     if (select_coords.start.y == -1) return "";
-
     std::string selected_text = "";
     Coords start = select_coords.start;
     Coords end = select_coords.end;
-
+    
     if (start.y > end.y || (start.y == end.y && start.x > end.x)) {
         std::swap(start, end);
     }
@@ -665,7 +778,7 @@ std::string Shard::get_selected_text(){
     size_t start_x = static_cast<size_t>(start.x);
     size_t end_y = static_cast<size_t>(end.y);
     size_t end_x = static_cast<size_t>(end.x);
-    
+    		
     if (start_y >= lines.size() || end_y >= lines.size()) {
         return "";
     }
@@ -683,11 +796,11 @@ std::string Shard::get_selected_text(){
             selected_text += lines[start_y].substr(start_x);
         }
         selected_text += '\n';
-        
+
         for (size_t i = start_y + 1; i < end_y && i < lines.size(); ++i) {
              selected_text += lines[i] + '\n';
         }
-        
+        		
         if (end_y < lines.size() && end_x > 0) {
             size_t len = end_x;
             if (len > lines[end_y].length()) {

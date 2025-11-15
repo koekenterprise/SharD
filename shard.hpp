@@ -1,8 +1,13 @@
+#ifndef SHARD_HPP
+#define SHARD_HPP
+
 #include <string>
 #include <vector>
 #include <sys/stat.h>
 #include <algorithm>
-#include <ncurses.h> 
+#include <ncurses.h>
+#include <cstddef> 
+#include <utility>
 
 
 struct Coords {
@@ -22,12 +27,12 @@ public:
     void run();
 
 private:
-  	size_t x, y;
+    size_t x, y;
     char mode;
     std::string status;
     std::string section;
     std::string filename;
-    std::vector<std::string> lines; 
+    std::vector<std::string> lines;
     std::string clipboard;
     int color_pair;
     
@@ -51,7 +56,8 @@ private:
     void open();
     void save();
     
-  
     std::string get_selected_text();
     void clear_selection();
 };
+
+#endif

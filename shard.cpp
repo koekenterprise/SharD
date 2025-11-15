@@ -92,6 +92,9 @@ Shard::Shard(const std::string& file){
         init_pair(5, COLOR_BLACK, COLOR_MAGENTA);
         init_pair(6, COLOR_BLACK, COLOR_YELLOW);
     }
+    
+    
+    select_coords.start.y = -1;
 
     try {
         open();
@@ -170,25 +173,38 @@ void Shard::statusline(){
 
 void Shard::input(int c){
 
+
     switch (c) {
         case 'q':
             if (mode == 'n') {
                 mode = 'q';
+                return;
             }
-            return;
+         
+            if (mode == 'i') { 
+                break;
+            }
+            return; 
+
         case 'i':
-            mode = 'i';
-            break;
-        case 27:
+            if (mode != 'i') { 
+                mode = 'i';
+                return; 
+            }
+            break; 
+
+        case 27: 
             mode = 'n';
-            break;
-        case 15:
+            return; 
+
+        case 15: 
             if (mode == 'n'){
                 save();
             }
-            break;
+            return; 
+            
         default:
-            break;
+            break; 
     }
 
     switch (mode){
@@ -241,7 +257,7 @@ void Shard::input(int c){
                     }
                     break;
 
-                case 25:
+                case 25: 
                     if (!clipboard.empty() && y < lines.size()) {
                         lines[y].insert(x, clipboard);
                         x += clipboard.length();
@@ -252,7 +268,6 @@ void Shard::input(int c){
 
                 case 127:
                 case KEY_BACKSPACE:
-
                     if (x == 0 && y > 0){
                         if (y-1 < lines.size()) {
                             x = lines[y-1].length();
@@ -293,7 +308,6 @@ void Shard::input(int c){
                     }
                     break;
 
-
                 case '(':
                     if (y < lines.size()) {
                         lines[y].insert(x, 2, ')');
@@ -317,7 +331,8 @@ void Shard::input(int c){
                         ++x;
                     }
                     break;
-
+                
+                
                 default:
                     if ((c >= 32 && c <= 126) || c > 255) {
                         if (y < lines.size()) {
@@ -333,7 +348,6 @@ void Shard::input(int c){
 void Shard::print(){
     for (size_t i {}; i < (size_t)LINES-1; ++i){
         if (i >= lines.size()){
-
             move(static_cast<int>(i), 0);
             clrtoeol();
         } else{
@@ -354,7 +368,6 @@ void Shard::m_remove(int number){
 std::string Shard::m_tabs(std::string& line){
     std::size_t pos = 0;
     while ((pos = line.find('\t')) != std::string::npos) {
-
         line.replace(pos, 1, " ");
     }
     return line;
@@ -408,4 +421,47 @@ void Shard::down(){
         x = lines[y].length();
     }
     move(static_cast<int>(y), static_cast<int>(x));
+}
+
+std::string Shard::get_selected_text(){
+    if (select_coords.start.y == -1) return "";
+
+    std::string selected_text = "";
+    Coords start = select_coords.start;
+    Coords end = select_coords.end;
+
+    if (start.y > end.y || (start.y == end.y && start.x > end.x)) {
+        std::swap(start, end);
+    }
+
+    size_t start_y = static_cast<size_t>(start.y);
+    size_t start_x = static_cast<size_t>(start.x);
+    size_t end_y = static_cast<size_t>(end.y);
+    size_t end_x = static_cast<size_t>(end.x);
+    
+    if (start_y >= lines.size() || end_y >= lines.size()) {
+        clear_selection();
+        return "";
+    }
+
+    if (start_y == end_y) {
+        size_t len = end_x > start_x ? end_x - start_x : 0;
+        selected_text = lines[start_y].substr(start_x, len);
+    } else {
+        selected_text += lines[start_y].substr(start_x) + '\n';
+        
+        for (size_t i = start_y + 1; i < end_y; ++i) {
+             selected_text += lines[i] + '\n';
+        }
+        
+        selected_text += lines[end.y].substr(0, end_x);
+    }
+    return selected_text;
+}
+
+void Shard::clear_selection(){
+    select_coords.start.y = -1;
+    select_coords.start.x = -1;
+    select_coords.end.y = -1;
+    select_coords.end.x = -1;
 }
